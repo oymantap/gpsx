@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <psxgpu.h>
 #include <psxetc.h>
@@ -83,39 +85,66 @@ static int god_mode = 0;
 static int prev_pad_btn = 0xFFFF;
 static int cheat_step = 0;
 
-/* Helper Load TIM File dari CD-ROM ke VRAM (PSn00bSDK Native I/O) */
+/*
+ * Load TIM File dari CD-ROM ke VRAM.
+ *
+ * POSIX-style file I/O yang dipakai:
+ * open(), lseek(), read(), close()
+ *
+ * Header yang dibutuhkan:
+ * <fcntl.h>  -> O_RDONLY
+ * <unistd.h> -> open/lseek/read/close
+ */
 static int load_tim_from_cd(const char *filename, TextureAsset *tex)
 {
     int fd;
     u_long *file_buf;
     long file_size;
+    long bytes_read;
     TIM_IMAGE tim;
 
-    /* O_RDONLY sudah terdefinisi di header PSn00bSDK / psxcd.h */
+    /* Pastikan state asset invalid sebelum mencoba load */
+    tex->loaded = 0;
+
     fd = open(filename, O_RDONLY);
+
     if (fd < 0) {
         return 0;
     }
 
-    /* Hitung ukuran file TIM menggunakan lseek bawaan PSn00bSDK */
+    /* Cari ukuran file */
     file_size = lseek(fd, 0, SEEK_END);
-    lseek(fd, 0, SEEK_SET);
 
     if (file_size <= 0) {
         close(fd);
         return 0;
     }
 
-    /* Alokasi memori dinamis */
-    file_buf = (u_long *)malloc(file_size);
+    /* Kembali ke awal file */
+    if (lseek(fd, 0, SEEK_SET) < 0) {
+        close(fd);
+        return 0;
+    }
+
+    /* Alokasi buffer sesuai ukuran TIM */
+    file_buf = (u_long *)malloc((size_t)file_size);
+
     if (!file_buf) {
         close(fd);
         return 0;
     }
 
-    read(fd, file_buf, file_size);
+    /* Baca seluruh file */
+    bytes_read = read(fd, file_buf, (size_t)file_size);
+
     close(fd);
 
+    if (bytes_read != file_size) {
+        free(file_buf);
+        return 0;
+    }
+
+    /* Parse TIM */
     GetTimInfo(file_buf, &tim);
 
     /* Transfer Pixel Data ke VRAM */
@@ -124,7 +153,7 @@ static int load_tim_from_cd(const char *filename, TextureAsset *tex)
         DrawSync(0);
     }
 
-    /* Transfer CLUT (Palette) jika ada */
+    /* Transfer CLUT jika texture menggunakan palette */
     if (tim.mode & 0x8) {
         if (tim.crect) {
             LoadImage(tim.crect, tim.caddr);
@@ -132,15 +161,42 @@ static int load_tim_from_cd(const char *filename, TextureAsset *tex)
         }
     }
 
-    tex->tpage = getTPage(tim.mode & 0x3, 0, tim.prect->x, tim.prect->y);
-    tex->clut = (tim.mode & 0x8) ? getClut(tim.crect->x, tim.crect->y) : 0;
-    tex->u = (tim.prect->x & 0x3f) * ((tim.mode & 0x3) == 0 ? 4 : (tim.mode & 0x3) == 1 ? 2 : 1);
+    /*
+     * Pastikan pixel rectangle valid sebelum mengaksesnya.
+     * Kalau TIM rusak / invalid, jangan dereference NULL.
+     */
+    if (!tim.prect) {
+        free(file_buf);
+        return 0;
+    }
+
+    tex->tpage = getTPage(
+        tim.mode & 0x3,
+        0,
+        tim.prect->x,
+        tim.prect->y
+    );
+
+    tex->clut = (tim.mode & 0x8) && tim.crect
+        ? getClut(tim.crect->x, tim.crect->y)
+        : 0;
+
+    tex->u = (tim.prect->x & 0x3f) *
+        (((tim.mode & 0x3) == 0) ? 4 :
+         ((tim.mode & 0x3) == 1) ? 2 : 1);
+
     tex->v = tim.prect->y & 0xff;
-    tex->w = tim.prect->w * ((tim.mode & 0x3) == 0 ? 4 : (tim.mode & 0x3) == 1 ? 2 : 1);
+
+    tex->w = tim.prect->w *
+        (((tim.mode & 0x3) == 0) ? 4 :
+         ((tim.mode & 0x3) == 1) ? 2 : 1);
+
     tex->h = tim.prect->h;
+
     tex->loaded = 1;
 
     free(file_buf);
+
     return 1;
 }
 
@@ -148,11 +204,33 @@ static void init_video(void)
 {
     ResetGraph(0);
 
-    SetDefDispEnv(&disp[0], 0, 0, SCREEN_X, SCREEN_Y);
-    SetDefDispEnv(&disp[1], 0, SCREEN_Y, SCREEN_X, SCREEN_Y);
+    SetDefDispEnv(
+        &disp[0],
+        0, 0,
+        SCREEN_X,
+        SCREEN_Y
+    );
 
-    SetDefDrawEnv(&draw[0], 0, SCREEN_Y, SCREEN_X, SCREEN_Y);
-    SetDefDrawEnv(&draw[1], 0, 0, SCREEN_X, SCREEN_Y);
+    SetDefDispEnv(
+        &disp[1],
+        0, SCREEN_Y,
+        SCREEN_X,
+        SCREEN_Y
+    );
+
+    SetDefDrawEnv(
+        &draw[0],
+        0, SCREEN_Y,
+        SCREEN_X,
+        SCREEN_Y
+    );
+
+    SetDefDrawEnv(
+        &draw[1],
+        0, 0,
+        SCREEN_X,
+        SCREEN_Y
+    );
 
     draw[0].isbg = 1;
     draw[1].isbg = 1;
@@ -164,7 +242,13 @@ static void init_video(void)
     PutDrawEnv(&draw[0]);
 
     FntLoad(960, 0);
-    font_id = FntOpen(8, 8, 304, 224, 0, 100);
+
+    font_id = FntOpen(
+        8, 8,
+        304, 224,
+        0,
+        100
+    );
 
     SetDispMask(1);
 }
@@ -172,9 +256,17 @@ static void init_video(void)
 static void init_pad(void)
 {
     EnterCriticalSection();
-    InitPAD(padbuff[0], 34, padbuff[1], 34);
+
+    InitPAD(
+        padbuff[0],
+        34,
+        padbuff[1],
+        34
+    );
+
     StartPAD();
     ChangeClearPAD(1);
+
     ExitCriticalSection();
 }
 
@@ -184,6 +276,7 @@ static void reset_game(void)
 
     player_x = 150;
     player_y = 205;
+
     score = 0;
     frame_counter = 0;
     boost_timer = 0;
@@ -207,12 +300,19 @@ static void reset_game(void)
 static void spawn_enemy(void)
 {
     int i;
+
     for (i = 0; i < MAX_ENEMIES; ++i) {
         if (!enemies[i].active) {
             enemies[i].active = 1;
-            enemies[i].x = 20 + ((frame_counter * 37 + i * 53) % 280);
+
+            enemies[i].x =
+                20 + ((frame_counter * 37 + i * 53) % 280);
+
             enemies[i].y = -18;
-            enemies[i].speed = 2 + ((frame_counter + i) % 3);
+
+            enemies[i].speed =
+                2 + ((frame_counter + i) % 3);
+
             return;
         }
     }
@@ -222,7 +322,10 @@ static void spawn_potion(void)
 {
     if (!potion.active) {
         potion.active = 1;
-        potion.x = 30 + (frame_counter * 17) % 260;
+
+        potion.x =
+            30 + (frame_counter * 17) % 260;
+
         potion.y = -16;
     }
 }
@@ -230,71 +333,168 @@ static void spawn_potion(void)
 static void shoot_bullet(void)
 {
     int i;
+
     for (i = 0; i < MAX_BULLETS; ++i) {
         if (!bullets[i].active) {
             bullets[i].active = 1;
-            bullets[i].x = player_x + 10;
-            bullets[i].y = player_y - 6;
+
+            bullets[i].x =
+                player_x + 10;
+
+            bullets[i].y =
+                player_y - 6;
+
             return;
         }
     }
 }
 
-static int overlap(int ax, int ay, int aw, int ah,
-                   int bx, int by, int bw, int bh)
+static int overlap(
+    int ax,
+    int ay,
+    int aw,
+    int ah,
+    int bx,
+    int by,
+    int bw,
+    int bh
+)
 {
-    return ax < bx + bw && ax + aw > bx &&
-           ay < by + bh && ay + ah > by;
+    return
+        ax < bx + bw &&
+        ax + aw > bx &&
+        ay < by + bh &&
+        ay + ah > by;
 }
 
-/* Helper Menggambar Sprite Bermotif Tekstur (TIM) */
-static void draw_sprite(char **nextpri, TextureAsset *tex, int x, int y, int w, int h, int r, int g, int b)
+/* Helper menggambar sprite TIM */
+static void draw_sprite(
+    char **nextpri,
+    TextureAsset *tex,
+    int x,
+    int y,
+    int w,
+    int h,
+    int r,
+    int g,
+    int b
+)
 {
     if (!tex->loaded) {
-        /* Fallback jika TIM gagal muat */
         TILE *tile = (TILE *)*nextpri;
+
         setTile(tile);
         setXY0(tile, x, y);
         setWH(tile, w, h);
         setRGB0(tile, r, g, b);
-        addPrim(ot[db] + (OT_LEN - 1), tile);
+
+        addPrim(
+            ot[db] + (OT_LEN - 1),
+            tile
+        );
+
         *nextpri += sizeof(TILE);
+
         return;
     }
 
     SPRT *sprt = (SPRT *)*nextpri;
+
     setSprt(sprt);
     setXY0(sprt, x, y);
     setWH(sprt, w, h);
-    setUV0(sprt, tex->u, tex->v);
-    setRGB0(sprt, r, g, b);
 
-    /* Setup TPage & CLUT Primitive */
-    DR_TPAGE *tpage = (DR_TPAGE *)(*nextpri + sizeof(SPRT));
-    setDrawTPage(tpage, 0, 1, tex->tpage);
+    setUV0(
+        sprt,
+        tex->u,
+        tex->v
+    );
+
+    setRGB0(
+        sprt,
+        r,
+        g,
+        b
+    );
+
+    /* Setup TPage */
+    DR_TPAGE *tpage =
+        (DR_TPAGE *)(*nextpri + sizeof(SPRT));
+
+    setDrawTPage(
+        tpage,
+        0,
+        1,
+        tex->tpage
+    );
 
     sprt->clut = tex->clut;
 
-    addPrim(ot[db] + (OT_LEN - 1), sprt);
-    addPrim(ot[db] + (OT_LEN - 1), tpage);
+    addPrim(
+        ot[db] + (OT_LEN - 1),
+        sprt
+    );
 
-    *nextpri += sizeof(SPRT) + sizeof(DR_TPAGE);
+    addPrim(
+        ot[db] + (OT_LEN - 1),
+        tpage
+    );
+
+    *nextpri +=
+        sizeof(SPRT) +
+        sizeof(DR_TPAGE);
 }
 
-static void draw_tile(char **nextpri, int x, int y, int w, int h, int r, int g, int b)
+static void draw_tile(
+    char **nextpri,
+    int x,
+    int y,
+    int w,
+    int h,
+    int r,
+    int g,
+    int b
+)
 {
     TILE *tile = (TILE *)*nextpri;
+
     setTile(tile);
-    setXY0(tile, x, y);
-    setWH(tile, w, h);
-    setRGB0(tile, r, g, b);
-    addPrim(ot[db] + (OT_LEN - 1), tile);
+
+    setXY0(
+        tile,
+        x,
+        y
+    );
+
+    setWH(
+        tile,
+        w,
+        h
+    );
+
+    setRGB0(
+        tile,
+        r,
+        g,
+        b
+    );
+
+    addPrim(
+        ot[db] + (OT_LEN - 1),
+        tile
+    );
+
     *nextpri += sizeof(TILE);
 }
 
-static int is_btn_pressed(u_short btn_mask, u_short curr_btn)
+static int is_btn_pressed(
+    u_short btn_mask,
+    u_short curr_btn
+)
 {
-    return (!(curr_btn & btn_mask)) && (prev_pad_btn & btn_mask);
+    return
+        (!(curr_btn & btn_mask)) &&
+        (prev_pad_btn & btn_mask);
 }
 
 static void check_cheat_code(u_short curr_btn)
@@ -305,150 +505,250 @@ static void check_cheat_code(u_short curr_btn)
     }
 
     if (is_btn_pressed(PAD_CIRCLE, curr_btn)) {
-        if (cheat_step == 0) cheat_step = 1;
+        if (cheat_step == 0) {
+            cheat_step = 1;
+        }
         else if (cheat_step == 3) {
             god_mode = !god_mode;
             cheat_step = 0;
-        } else cheat_step = 0;
-    } 
+        }
+        else {
+            cheat_step = 0;
+        }
+    }
     else if (is_btn_pressed(PAD_CROSS, curr_btn)) {
-        if (cheat_step == 1) cheat_step = 2;
-        else cheat_step = 0;
-    } 
+        if (cheat_step == 1) {
+            cheat_step = 2;
+        }
+        else {
+            cheat_step = 0;
+        }
+    }
     else if (is_btn_pressed(PAD_TRIANGLE, curr_btn)) {
-        if (cheat_step == 2) cheat_step = 3;
-        else cheat_step = 0;
+        if (cheat_step == 2) {
+            cheat_step = 3;
+        }
+        else {
+            cheat_step = 0;
+        }
     }
 }
 
 static void update_game(void)
 {
-    PADTYPE *pad = (PADTYPE *)padbuff[0];
-    u_short btn;
-    int i, j;
+    PADTYPE *pad =
+        (PADTYPE *)padbuff[0];
 
-    if (pad->stat != 0) return;
+    u_short btn;
+
+    int i;
+    int j;
+
+    if (pad->stat != 0)
+        return;
 
     btn = pad->btn;
+
     ++frame_counter;
 
-    /* 1. STATE INTRO (ODEN STUDIO, Unskippable & Fade-In/Out) */
+    /* STATE INTRO */
     if (game_state == STATE_INTRO) {
+
         if (frame_counter >= 240) {
             game_state = STATE_START_SCREEN;
             frame_counter = 0;
         }
     }
-    /* 2. STATE START SCREEN */
+
+    /* STATE START SCREEN */
     else if (game_state == STATE_START_SCREEN) {
+
         check_cheat_code(btn);
 
         if (is_btn_pressed(PAD_START, btn)) {
             game_state = STATE_MAIN_MENU;
         }
     }
-    /* 3. STATE MAIN MENU */
+
+    /* STATE MAIN MENU */
     else if (game_state == STATE_MAIN_MENU) {
-        if (is_btn_pressed(PAD_UP, btn) || is_btn_pressed(PAD_DOWN, btn)) {
+
+        if (
+            is_btn_pressed(PAD_UP, btn) ||
+            is_btn_pressed(PAD_DOWN, btn)
+        ) {
             menu_selection = !menu_selection;
         }
 
-        if (is_btn_pressed(PAD_CROSS, btn) || is_btn_pressed(PAD_START, btn)) {
+        if (
+            is_btn_pressed(PAD_CROSS, btn) ||
+            is_btn_pressed(PAD_START, btn)
+        ) {
+
             if (menu_selection == 0) {
                 reset_game();
                 game_state = STATE_GAMEPLAY;
-            } else {
+            }
+            else {
                 game_state = STATE_START_SCREEN;
             }
         }
     }
-    /* 4. STATE GAMEPLAY */
+
+    /* STATE GAMEPLAY */
     else if (game_state == STATE_GAMEPLAY) {
-        int move_speed = (boost_timer > 0) ? 5 : 3;
+
+        int move_speed =
+            (boost_timer > 0) ? 5 : 3;
 
         if (boost_timer > 0)
             --boost_timer;
 
         /* Movement */
-        if (!(btn & PAD_LEFT))  player_x -= move_speed;
-        if (!(btn & PAD_RIGHT)) player_x += move_speed;
-        if (!(btn & PAD_UP))    player_y -= move_speed;
-        if (!(btn & PAD_DOWN))  player_y += move_speed;
+        if (!(btn & PAD_LEFT))
+            player_x -= move_speed;
 
-        if (player_x < 8) player_x = 8;
-        if (player_x > 288) player_x = 288;
-        if (player_y < 40) player_y = 40;
-        if (player_y > 216) player_y = 216;
+        if (!(btn & PAD_RIGHT))
+            player_x += move_speed;
 
-        /* Shoot Bullet */
+        if (!(btn & PAD_UP))
+            player_y -= move_speed;
+
+        if (!(btn & PAD_DOWN))
+            player_y += move_speed;
+
+        /* Bounds */
+        if (player_x < 8)
+            player_x = 8;
+
+        if (player_x > 288)
+            player_x = 288;
+
+        if (player_y < 40)
+            player_y = 40;
+
+        if (player_y > 216)
+            player_y = 216;
+
+        /* Shoot */
         if (is_btn_pressed(PAD_CIRCLE, btn)) {
             shoot_bullet();
         }
 
-        /* Update Bullets */
+        /* Update bullets */
         for (i = 0; i < MAX_BULLETS; ++i) {
-            if (!bullets[i].active) continue;
+
+            if (!bullets[i].active)
+                continue;
 
             bullets[i].y -= 6;
+
             if (bullets[i].y < 30) {
                 bullets[i].active = 0;
             }
         }
 
-        /* Spawn Potion (Drop Random) */
+        /* Spawn potion */
         if ((frame_counter % 300) == 0) {
             spawn_potion();
         }
 
-        /* Update Potion Drop & Collision */
+        /* Update potion */
         if (potion.active) {
+
             potion.y += 2;
-            if (overlap(player_x, player_y, 24, 18, potion.x, potion.y, 16, 16)) {
+
+            if (
+                overlap(
+                    player_x,
+                    player_y,
+                    24,
+                    18,
+                    potion.x,
+                    potion.y,
+                    16,
+                    16
+                )
+            ) {
                 potion.active = 0;
                 boost_timer = 180;
             }
+
             if (potion.y > SCREEN_Y) {
                 potion.active = 0;
             }
         }
 
-        /* Spawn Enemies */
-        if ((frame_counter % 40) == 0)
+        /* Spawn enemies */
+        if ((frame_counter % 40) == 0) {
             spawn_enemy();
+        }
 
-        /* Update Enemies */
+        /* Update enemies */
         for (i = 0; i < MAX_ENEMIES; ++i) {
-            if (!enemies[i].active) continue;
 
-            enemies[i].y += enemies[i].speed;
+            if (!enemies[i].active)
+                continue;
 
-            /* Check Bullet Collision */
+            enemies[i].y +=
+                enemies[i].speed;
+
+            /* Bullet collision */
             for (j = 0; j < MAX_BULLETS; ++j) {
-                if (bullets[j].active && overlap(bullets[j].x, bullets[j].y, 4, 8,
-                                                enemies[i].x, enemies[i].y, 18, 18)) {
+
+                if (
+                    bullets[j].active &&
+                    overlap(
+                        bullets[j].x,
+                        bullets[j].y,
+                        4,
+                        8,
+                        enemies[i].x,
+                        enemies[i].y,
+                        18,
+                        18
+                    )
+                ) {
                     bullets[j].active = 0;
                     enemies[i].active = 0;
                     score += 2;
                 }
             }
 
-            /* Check Player Collision */
-            if (enemies[i].active && overlap(player_x, player_y, 24, 18,
-                                            enemies[i].x, enemies[i].y, 18, 18)) {
+            /* Player collision */
+            if (
+                enemies[i].active &&
+                overlap(
+                    player_x,
+                    player_y,
+                    24,
+                    18,
+                    enemies[i].x,
+                    enemies[i].y,
+                    18,
+                    18
+                )
+            ) {
                 if (!god_mode) {
                     game_state = STATE_GAMEOVER;
                 }
             }
 
+            /* Enemy leaves screen */
             if (enemies[i].y > SCREEN_Y) {
                 enemies[i].active = 0;
                 ++score;
             }
         }
     }
-    /* 5. STATE GAMEOVER */
+
+    /* STATE GAMEOVER */
     else if (game_state == STATE_GAMEOVER) {
-        if (is_btn_pressed(PAD_START, btn) || is_btn_pressed(PAD_CROSS, btn)) {
+
+        if (
+            is_btn_pressed(PAD_START, btn) ||
+            is_btn_pressed(PAD_CROSS, btn)
+        ) {
             game_state = STATE_MAIN_MENU;
         }
     }
@@ -458,95 +758,253 @@ static void update_game(void)
 
 static void draw_game(void)
 {
-    char *nextpri = (char *)primbuff[db];
+    char *nextpri =
+        (char *)primbuff[db];
+
     int i;
 
-    ClearOTagR(ot[db], OT_LEN);
+    ClearOTagR(
+        ot[db],
+        OT_LEN
+    );
 
+    /* INTRO */
     if (game_state == STATE_INTRO) {
+
         int brightness = 0;
+
         if (frame_counter < 60) {
-            brightness = (frame_counter * 255) / 60;
-        } else if (frame_counter < 180) {
+            brightness =
+                (frame_counter * 255) / 60;
+        }
+        else if (frame_counter < 180) {
             brightness = 255;
-        } else {
-            brightness = ((240 - frame_counter) * 255) / 60;
+        }
+        else {
+            brightness =
+                ((240 - frame_counter) * 255) / 60;
         }
 
-        if (brightness < 0) brightness = 0;
-        if (brightness > 255) brightness = 255;
+        if (brightness < 0)
+            brightness = 0;
 
-        setRGB0(&draw[db], 0, 0, 0);
-        FntPrint(font_id, "\n\n\n\n\n\n\n\n          ODEN STUDIO");
+        if (brightness > 255)
+            brightness = 255;
+
+        setRGB0(
+            &draw[db],
+            0,
+            0,
+            0
+        );
+
+        FntPrint(
+            font_id,
+            "\n\n\n\n\n\n\n\n"
+            "          ODEN STUDIO"
+        );
     }
+
+    /* START SCREEN */
     else if (game_state == STATE_START_SCREEN) {
-        setRGB0(&draw[db], 5, 8, 24);
-        FntPrint(font_id, "\n\n\n\n        NEON RUNNER PSX\n\n\n\n\n\n\n\n"
-                          "      - PRESS START BUTTON -");
+
+        setRGB0(
+            &draw[db],
+            5,
+            8,
+            24
+        );
+
+        FntPrint(
+            font_id,
+            "\n\n\n\n"
+            "        NEON RUNNER PSX\n"
+            "\n\n\n\n\n\n\n\n"
+            "      - PRESS START BUTTON -"
+        );
+
         if (god_mode) {
-            FntPrint(font_id, "\n\n     [ CHEAT: GODMODE ON ]");
+            FntPrint(
+                font_id,
+                "\n\n     [ CHEAT: GODMODE ON ]"
+            );
         }
     }
+
+    /* MAIN MENU */
     else if (game_state == STATE_MAIN_MENU) {
-        setRGB0(&draw[db], 5, 8, 24);
-        FntPrint(font_id, "\n\n\n\n        NEON RUNNER PSX\n\n\n\n\n\n"
-                          "           MAIN MENU\n\n"
-                          "        %c START GAME\n"
-                          "        %c EXIT GAME",
-                          (menu_selection == 0) ? '>' : ' ',
-                          (menu_selection == 1) ? '>' : ' ');
+
+        setRGB0(
+            &draw[db],
+            5,
+            8,
+            24
+        );
+
+        FntPrint(
+            font_id,
+            "\n\n\n\n"
+            "        NEON RUNNER PSX\n"
+            "\n\n\n\n"
+            "           MAIN MENU\n\n"
+            "        %c START GAME\n"
+            "        %c EXIT GAME",
+            (menu_selection == 0) ? '>' : ' ',
+            (menu_selection == 1) ? '>' : ' '
+        );
     }
-    else if (game_state == STATE_GAMEPLAY || game_state == STATE_GAMEOVER) {
-        setRGB0(&draw[db], 5, 8, 24);
 
-        /* Render Player (TIM Sprite) */
-        draw_sprite(&nextpri, &tex_player, player_x, player_y, 24, 18, 
-                    (boost_timer > 0) ? 255 : 200, 255, 255);
+    /* GAMEPLAY / GAMEOVER */
+    else if (
+        game_state == STATE_GAMEPLAY ||
+        game_state == STATE_GAMEOVER
+    ) {
 
-        /* Render Potion Drop (TIM Sprite) */
+        setRGB0(
+            &draw[db],
+            5,
+            8,
+            24
+        );
+
+        /* Player */
+        draw_sprite(
+            &nextpri,
+            &tex_player,
+            player_x,
+            player_y,
+            24,
+            18,
+            (boost_timer > 0) ? 255 : 200,
+            255,
+            255
+        );
+
+        /* Potion */
         if (potion.active) {
-            draw_sprite(&nextpri, &tex_potion, potion.x, potion.y, 16, 16, 255, 255, 255);
+            draw_sprite(
+                &nextpri,
+                &tex_potion,
+                potion.x,
+                potion.y,
+                16,
+                16,
+                255,
+                255,
+                255
+            );
         }
 
-        /* Render Peluru */
+        /* Bullets */
         for (i = 0; i < MAX_BULLETS; ++i) {
-            if (bullets[i].active)
-                draw_tile(&nextpri, bullets[i].x, bullets[i].y, 4, 8, 255, 255, 0);
+
+            if (bullets[i].active) {
+
+                draw_tile(
+                    &nextpri,
+                    bullets[i].x,
+                    bullets[i].y,
+                    4,
+                    8,
+                    255,
+                    255,
+                    0
+                );
+            }
         }
 
-        /* Render Musuh (TIM Sprite) */
+        /* Enemies */
         for (i = 0; i < MAX_ENEMIES; ++i) {
-            if (enemies[i].active)
-                draw_sprite(&nextpri, &tex_enemy, enemies[i].x, enemies[i].y, 18, 18, 255, 255, 255);
+
+            if (enemies[i].active) {
+
+                draw_sprite(
+                    &nextpri,
+                    &tex_enemy,
+                    enemies[i].x,
+                    enemies[i].y,
+                    18,
+                    18,
+                    255,
+                    255,
+                    255
+                );
+            }
         }
 
-        /* Separator Line HUD */
-        draw_tile(&nextpri, 0, 30, 320, 2, 80, 90, 150);
-        draw_tile(&nextpri, 0, 232, 320, 2, 80, 90, 150);
+        /* HUD separator */
+        draw_tile(
+            &nextpri,
+            0,
+            30,
+            320,
+            2,
+            80,
+            90,
+            150
+        );
 
+        draw_tile(
+            &nextpri,
+            0,
+            232,
+            320,
+            2,
+            80,
+            90,
+            150
+        );
+
+        /* Game over */
         if (game_state == STATE_GAMEOVER) {
-            FntPrint(font_id, "\n\n\n\n         GAME OVER!\n\n        FINAL SCORE: %d\n\n\n      PRESS START TO MENU", score);
-        } else {
-            FntPrint(font_id, "\n NEON RUNNER   SCORE %d   %s %s", 
-                     score, 
-                     (boost_timer > 0) ? "[BOOST!]" : "",
-                     god_mode ? "[GOD]" : "");
+
+            FntPrint(
+                font_id,
+                "\n\n\n\n"
+                "         GAME OVER!\n\n"
+                "        FINAL SCORE: %d\n\n"
+                "      PRESS START TO MENU",
+                score
+            );
+        }
+        else {
+
+            FntPrint(
+                font_id,
+                "\n NEON RUNNER   SCORE %d   %s %s",
+                score,
+                (boost_timer > 0)
+                    ? "[BOOST!]"
+                    : "",
+                god_mode
+                    ? "[GOD]"
+                    : ""
+            );
         }
     }
 
     FntFlush(font_id);
-    DrawOTag(ot[db] + (OT_LEN - 1));
+
+    DrawOTag(
+        ot[db] + (OT_LEN - 1)
+    );
 }
 
 static void display(void)
 {
     DrawSync(0);
+
     VSync(0);
 
     db = !db;
 
-    PutDispEnv(&disp[db]);
-    PutDrawEnv(&draw[db]);
+    PutDispEnv(
+        &disp[db]
+    );
+
+    PutDrawEnv(
+        &draw[db]
+    );
 
     SetDispMask(1);
 }
@@ -554,17 +1012,40 @@ static void display(void)
 int main(void)
 {
     CdInit();
+
     init_video();
     init_pad();
 
-    /* Load TIM Textures dari CD-ROM menggunakan PSn00bSDK POSIX path */
-    load_tim_from_cd("cdrom:\\PLAYER.TIM;1", &tex_player);
-    load_tim_from_cd("cdrom:\\ENEMY.TIM;1", &tex_enemy);
-    load_tim_from_cd("cdrom:\\POTION.TIM;1", &tex_potion);
+    /*
+     * Load TIM dari CD-ROM.
+     *
+     * File harus berada di image CD:
+     *
+     * PLAYER.TIM
+     * ENEMY.TIM
+     * POTION.TIM
+     */
+    load_tim_from_cd(
+        "cdrom:\\PLAYER.TIM;1",
+        &tex_player
+    );
+
+    load_tim_from_cd(
+        "cdrom:\\ENEMY.TIM;1",
+        &tex_enemy
+    );
+
+    load_tim_from_cd(
+        "cdrom:\\POTION.TIM;1",
+        &tex_potion
+    );
 
     while (1) {
+
         update_game();
+
         draw_game();
+
         display();
     }
 
