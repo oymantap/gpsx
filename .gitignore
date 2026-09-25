@@ -1,0 +1,7 @@
+build/
+vendor/
+*.bin
+*.cue
+*.exe
+*.elf
+*.map

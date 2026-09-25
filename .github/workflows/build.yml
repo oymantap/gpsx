@@ -1,0 +1,51 @@
+name: Build Neon Runner PSX
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install CMake and Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build unzip wget
+
+      - name: Download PSn00bSDK v0.24
+        run: |
+          mkdir -p vendor
+          wget -q https://github.com/Lameguy64/PSn00bSDK/releases/download/v0.24/PSn00bSDK-0.24-Linux.zip -O /tmp/psn00bsdk.zip
+          unzip -q /tmp/psn00bsdk.zip -d vendor
+          mv vendor/PSn00bSDK-0.24-Linux vendor/PSn00bSDK
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja             -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/vendor/PSn00bSDK/lib/libpsn00b/cmake/sdk.cmake"             -DPSN00BSDK_LIBS="$GITHUB_WORKSPACE/vendor/PSn00bSDK/lib/libpsn00b"             -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Show build output
+        run: find build -maxdepth 3 -type f | sort
+
+      - name: Package PSX image
+        run: |
+          test -f build/neon_runner.bin
+          test -f build/neon_runner.cue
+          mkdir -p release
+          cp build/neon_runner.bin release/
+          cp build/neon_runner.cue release/
+          cp build/neon_runner.exe release/
+
+      - name: Upload PSX build
+        uses: actions/upload-artifact@v4
+        with:
+          name: neon-runner-psx
+          path: release/
