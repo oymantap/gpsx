@@ -9,13 +9,13 @@ include("${PSN00BSDK_LIBS}/cmake/sdk.cmake")
 
 include_directories("${CMAKE_SOURCE_DIR}/src")
 
-# --- KONVERSI AUTOMATIS PNG KE TIM (RUNNER GITHUB ACTIONS) ---
+# --- KONVERSI AUTOMATIS PNG KE TIM ---
 set(ASSETS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets")
 set(GEN_ASSETS_DIR "${CMAKE_CURRENT_BINARY_DIR}/gen_assets")
 file(MAKE_DIRECTORY "${GEN_ASSETS_DIR}")
 
-# Path ke tool img2tim bawaan PSn00bSDK
-set(IMG2TIM "${CMAKE_SOURCE_DIR}/vendor/PSn00bSDK/bin/img2tim")
+# Cari img2tim di PATH atau folder vendor
+find_program(IMG2TIM img2tim HINTS "${CMAKE_SOURCE_DIR}/vendor/PSn00bSDK/bin")
 
 # Command konversi enemy.png -> enemy.tim
 add_custom_command(
