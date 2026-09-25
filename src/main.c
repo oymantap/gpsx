@@ -900,19 +900,8 @@ static void display(void)
 
 int main(void)
 {
-    CdInit();
-
     init_video();
     init_pad();
-
-    /*
-     * Temporarily disable CD asset loading.
-     */
-    /*
-    load_tim_from_cd("\\PLAYER.TIM;1", &tex_player);
-    load_tim_from_cd("\\ENEMY.TIM;1", &tex_enemy);
-    load_tim_from_cd("\\POTION.TIM;1", &tex_potion);
-    */
 
     while (1) {
         update_game();
