@@ -1,4 +1,4 @@
-Name: Build Neon Runner PSX
+name: Build Neon Runner PSX
 
 on:
   push:
@@ -25,7 +25,7 @@ jobs:
           unzip -q /tmp/psn00bsdk.zip -d vendor
           mv vendor/PSn00bSDK-0.24-Linux vendor/PSn00bSDK
           
-          # Beri izin eksekusi untuk semua binary CLI PSn00bSDK (img2tim, mkpsxiso, dll)
+          # Beri izin eksekusi untuk semua binary CLI PSn00bSDK
           chmod -R +x vendor/PSn00bSDK/bin
           
           # Tambahkan folder bin ke PATH GitHub Runner
