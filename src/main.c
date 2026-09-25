@@ -2,8 +2,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
 
 #include <psxgpu.h>
 #include <psxetc.h>
@@ -85,7 +83,7 @@ static int god_mode = 0;
 static int prev_pad_btn = 0xFFFF;
 static int cheat_step = 0;
 
-/* Helper Load TIM File dari CD-ROM ke VRAM (PSn00bSDK Native POSIX I/O) */
+/* Helper Load TIM File dari CD-ROM ke VRAM (PSn00bSDK Native I/O) */
 static int load_tim_from_cd(const char *filename, TextureAsset *tex)
 {
     int fd;
@@ -93,12 +91,13 @@ static int load_tim_from_cd(const char *filename, TextureAsset *tex)
     long file_size;
     TIM_IMAGE tim;
 
+    /* O_RDONLY sudah terdefinisi di header PSn00bSDK / psxcd.h */
     fd = open(filename, O_RDONLY);
     if (fd < 0) {
         return 0;
     }
 
-    /* Hitung ukuran file TIM */
+    /* Hitung ukuran file TIM menggunakan lseek bawaan PSn00bSDK */
     file_size = lseek(fd, 0, SEEK_END);
     lseek(fd, 0, SEEK_SET);
 
