@@ -93,8 +93,9 @@ static int load_tim_from_cd(const char *filename, TextureAsset *tex)
 {
     CdlFILE file;
     int sectors;
-    u_long *file_buf;
+    u_int *file_buf;
     TIM_IMAGE tim;
+    int mode;
 
     memset(tex, 0, sizeof(*tex));
 
@@ -108,15 +109,14 @@ static int load_tim_from_cd(const char *filename, TextureAsset *tex)
         return 0;
     }
 
-    file_buf = (u_long *)malloc((size_t)sectors * 2048);
+    file_buf = (u_int *)malloc((size_t)sectors * 2048);
 
     if (file_buf == NULL) {
         return 0;
     }
 
     /*
-     * PSn00bSDK v0.24:
-     * CdlFILE uses .pos, not .loc.
+     * PSn00bSDK v0.24 memakai file.pos.
      */
     CdControl(
         CdlSetloc,
@@ -135,16 +135,24 @@ static int load_tim_from_cd(const char *filename, TextureAsset *tex)
         return 0;
     }
 
+    /*
+     * Parse TIM dari buffer CD.
+     */
     GetTimInfo(
         file_buf,
         &tim
     );
 
-    if (tim.prect == NULL) {
+    if (tim.prect == NULL || tim.paddr == NULL) {
         free(file_buf);
         return 0;
     }
 
+    mode = tim.mode & 0x03;
+
+    /*
+     * Upload pixel data.
+     */
     LoadImage(
         tim.prect,
         tim.paddr
@@ -152,7 +160,10 @@ static int load_tim_from_cd(const char *filename, TextureAsset *tex)
 
     DrawSync(0);
 
-    if ((tim.mode & 0x8) && tim.crect != NULL) {
+    /*
+     * Upload CLUT jika TIM menggunakan CLUT.
+     */
+    if ((tim.mode & 0x08) && tim.crect != NULL && tim.caddr != NULL) {
         LoadImage(
             tim.crect,
             tim.caddr
@@ -161,14 +172,18 @@ static int load_tim_from_cd(const char *filename, TextureAsset *tex)
         DrawSync(0);
     }
 
+    /*
+     * Simpan semua informasi yang diperlukan
+     * SEBELUM buffer TIM dibebaskan.
+     */
     tex->tpage = getTPage(
-        tim.mode & 0x3,
+        mode,
         0,
         tim.prect->x,
         tim.prect->y
     );
 
-    if ((tim.mode & 0x8) && tim.crect != NULL) {
+    if ((tim.mode & 0x08) && tim.crect != NULL) {
         tex->clut = getClut(
             tim.crect->x,
             tim.crect->y
@@ -178,25 +193,26 @@ static int load_tim_from_cd(const char *filename, TextureAsset *tex)
         tex->clut = 0;
     }
 
-    switch (tim.mode & 0x3) {
-        case 0:
-            tex->u = (tim.prect->x & 0x3f) * 4;
-            tex->w = tim.prect->w * 4;
-            break;
-
-        case 1:
-            tex->u = (tim.prect->x & 0x3f) * 2;
-            tex->w = tim.prect->w * 2;
-            break;
-
-        default:
-            tex->u = tim.prect->x & 0x3f;
-            tex->w = tim.prect->w;
-            break;
+    /*
+     * TIM width masih dalam satuan WORD VRAM,
+     * jadi konversi sesuai texture depth.
+     */
+    if (mode == 0) {
+        tex->u = (tim.prect->x & 0x3f) * 4;
+        tex->w = tim.prect->w * 4;
+    }
+    else if (mode == 1) {
+        tex->u = (tim.prect->x & 0x3f) * 2;
+        tex->w = tim.prect->w * 2;
+    }
+    else {
+        tex->u = tim.prect->x & 0x3f;
+        tex->w = tim.prect->w;
     }
 
     tex->v = tim.prect->y & 0xff;
     tex->h = tim.prect->h;
+
     tex->loaded = 1;
 
     free(file_buf);
@@ -900,8 +916,35 @@ static void display(void)
 
 int main(void)
 {
+    /*
+     * ResetGraph harus terjadi sebelum CD-ROM initialization.
+     */
     init_video();
+
+    /*
+     * Sekarang CD-ROM benar-benar diinisialisasi.
+     */
+    CdInit();
+
     init_pad();
+
+    /*
+     * Load semua asset dari ISO.
+     */
+    load_tim_from_cd(
+        "\\PLAYER.TIM;1",
+        &tex_player
+    );
+
+    load_tim_from_cd(
+        "\\ENEMY.TIM;1",
+        &tex_enemy
+    );
+
+    load_tim_from_cd(
+        "\\POTION.TIM;1",
+        &tex_potion
+    );
 
     while (1) {
         update_game();
