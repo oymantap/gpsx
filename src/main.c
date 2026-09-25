@@ -98,29 +98,26 @@ static int load_tim_from_cd(const char *filename, TextureAsset *tex)
 
     memset(tex, 0, sizeof(*tex));
 
-    if (!CdSearchFile(&file, filename)) {
+    if (!CdSearchFile(&file, filename))
         return 0;
-    }
 
     sectors = (file.size + 2047) / 2048;
 
-    if (sectors <= 0) {
+    if (sectors <= 0)
         return 0;
-    }
 
     file_buf = (u_long *)malloc((size_t)sectors * 2048);
 
-    if (!file_buf) {
+    if (!file_buf)
+        return 0;
+
+    CdControl(CdlSetloc, (u_char *)&file.pos, 0);
+    CdRead(sectors, file_buf, CdlModeSpeed);
+
+    if (CdReadSync(0, 0) < 0) {
+        free(file_buf);
         return 0;
     }
-
-    /*
-     * Set the CD-ROM read position, then read the complete
-     * sector-aligned file into RAM.
-     */
-    CdControl(CdlSetloc, (u_char *)&file.loc, 0);
-    CdRead(sectors, file_buf, CdlModeSpeed);
-    CdReadSync(0, 0);
 
     GetTimInfo(file_buf, &tim);
 
@@ -167,7 +164,6 @@ static int load_tim_from_cd(const char *filename, TextureAsset *tex)
     tex->loaded = 1;
 
     free(file_buf);
-
     return 1;
 }
 
