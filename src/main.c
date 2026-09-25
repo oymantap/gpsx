@@ -1,12 +1,16 @@
 #include <sys/types.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+
 #include <psxgpu.h>
 #include <psxetc.h>
 #include <psxapi.h>
 #include <psxsio.h>
 #include <psxpad.h>
 #include <psxcd.h>
-#include <stdio.h>
-#include <stdlib.h>
 
 #define SCREEN_X 320
 #define SCREEN_Y 240
@@ -81,38 +85,37 @@ static int god_mode = 0;
 static int prev_pad_btn = 0xFFFF;
 static int cheat_step = 0;
 
-/* Helper Load TIM File dari CD-ROM ke VRAM menggunakan Standard C I/O PSn00bSDK */
+/* Helper Load TIM File dari CD-ROM ke VRAM (PSn00bSDK Native POSIX I/O) */
 static int load_tim_from_cd(const char *filename, TextureAsset *tex)
 {
-    FILE *fp;
+    int fd;
     u_long *file_buf;
     long file_size;
     TIM_IMAGE tim;
 
-    fp = fopen(filename, "rb");
-    if (!fp) {
+    fd = open(filename, O_RDONLY);
+    if (fd < 0) {
         return 0;
     }
 
     /* Hitung ukuran file TIM */
-    fseek(fp, 0, SEEK_END);
-    file_size = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
+    file_size = lseek(fd, 0, SEEK_END);
+    lseek(fd, 0, SEEK_SET);
 
     if (file_size <= 0) {
-        fclose(fp);
+        close(fd);
         return 0;
     }
 
-    /* Alokasi memori dinamis sesuai ukuran file */
+    /* Alokasi memori dinamis */
     file_buf = (u_long *)malloc(file_size);
     if (!file_buf) {
-        fclose(fp);
+        close(fd);
         return 0;
     }
 
-    fread(file_buf, 1, file_size, fp);
-    fclose(fp);
+    read(fd, file_buf, file_size);
+    close(fd);
 
     GetTimInfo(file_buf, &tim);
 
@@ -332,12 +335,10 @@ static void update_game(void)
 
     /* 1. STATE INTRO (ODEN STUDIO, Unskippable & Fade-In/Out) */
     if (game_state == STATE_INTRO) {
-        /* Total durasi 240 frame (~4 detik di 60FPS) */
         if (frame_counter >= 240) {
             game_state = STATE_START_SCREEN;
             frame_counter = 0;
         }
-        /* Tombol diabaikan agar unskippable */
     }
     /* 2. STATE START SCREEN */
     else if (game_state == STATE_START_SCREEN) {
@@ -395,7 +396,7 @@ static void update_game(void)
             }
         }
 
-        /* Spawn Potion (Drop Random setiap ~300 frame / 5 detik) */
+        /* Spawn Potion (Drop Random) */
         if ((frame_counter % 300) == 0) {
             spawn_potion();
         }
@@ -405,7 +406,7 @@ static void update_game(void)
             potion.y += 2;
             if (overlap(player_x, player_y, 24, 18, potion.x, potion.y, 16, 16)) {
                 potion.active = 0;
-                boost_timer = 180; /* Boost 3 detik */
+                boost_timer = 180;
             }
             if (potion.y > SCREEN_Y) {
                 potion.active = 0;
@@ -464,20 +465,18 @@ static void draw_game(void)
     ClearOTagR(ot[db], OT_LEN);
 
     if (game_state == STATE_INTRO) {
-        /* Hitung Alpha Intensity untuk Efek Fade-In & Fade-Out */
         int brightness = 0;
         if (frame_counter < 60) {
-            brightness = (frame_counter * 255) / 60; /* Fade In (1 detik) */
+            brightness = (frame_counter * 255) / 60;
         } else if (frame_counter < 180) {
-            brightness = 255; /* Tahan selama 2 detik */
+            brightness = 255;
         } else {
-            brightness = ((240 - frame_counter) * 255) / 60; /* Fade Out (1 detik) */
+            brightness = ((240 - frame_counter) * 255) / 60;
         }
 
         if (brightness < 0) brightness = 0;
         if (brightness > 255) brightness = 255;
 
-        /* Warna Latar & Teks ODEN STUDIO */
         setRGB0(&draw[db], 0, 0, 0);
         FntPrint(font_id, "\n\n\n\n\n\n\n\n          ODEN STUDIO");
     }
@@ -559,7 +558,7 @@ int main(void)
     init_video();
     init_pad();
 
-    /* Load TIM Textures dari CD-ROM menggunakan path ISO standard */
+    /* Load TIM Textures dari CD-ROM menggunakan PSn00bSDK POSIX path */
     load_tim_from_cd("cdrom:\\PLAYER.TIM;1", &tex_player);
     load_tim_from_cd("cdrom:\\ENEMY.TIM;1", &tex_enemy);
     load_tim_from_cd("cdrom:\\POTION.TIM;1", &tex_potion);
