@@ -13,7 +13,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install CMake and Ninja
+      - name: Install Build Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build unzip wget
@@ -24,21 +24,16 @@ jobs:
           wget -q https://github.com/Lameguy64/PSn00bSDK/releases/download/v0.24/PSn00bSDK-0.24-Linux.zip -O /tmp/psn00bsdk.zip
           unzip -q /tmp/psn00bsdk.zip -d vendor
           mv vendor/PSn00bSDK-0.24-Linux vendor/PSn00bSDK
-          
-          # Beri izin eksekusi untuk semua binary CLI PSn00bSDK
           chmod -R +x vendor/PSn00bSDK/bin
-          
-          # Tambahkan folder bin ke PATH GitHub Runner
-          echo "$GITHUB_WORKSPACE/vendor/PSn00bSDK/bin" >> $GITHUB_PATH
 
-      - name: Configure
+      - name: Configure CMake
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/vendor/PSn00bSDK/lib/libpsn00b/cmake/sdk.cmake" \
             -DPSN00BSDK_LIBS="$GITHUB_WORKSPACE/vendor/PSn00bSDK/lib/libpsn00b" \
             -DCMAKE_BUILD_TYPE=Release
 
-      - name: Build
+      - name: Build Game ISO
         run: cmake --build build
 
       - name: Show build output

@@ -9,58 +9,20 @@ include("${PSN00BSDK_LIBS}/cmake/sdk.cmake")
 
 include_directories("${CMAKE_SOURCE_DIR}/src")
 
-# --- KONVERSI AUTOMATIS PNG KE TIM ---
-set(ASSETS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets")
-set(GEN_ASSETS_DIR "${CMAKE_CURRENT_BINARY_DIR}/gen_assets")
-file(MAKE_DIRECTORY "${GEN_ASSETS_DIR}")
-
-# Cari img2tim di PATH atau folder vendor
-find_program(IMG2TIM img2tim HINTS "${CMAKE_SOURCE_DIR}/vendor/PSn00bSDK/bin")
-
-# Command konversi enemy.png -> enemy.tim
-add_custom_command(
-    OUTPUT "${GEN_ASSETS_DIR}/enemy.tim"
-    COMMAND ${IMG2TIM} -o "${GEN_ASSETS_DIR}/enemy.tim" -bpp 8 -bkg 000000 "${ASSETS_DIR}/enemy.png"
-    DEPENDS "${ASSETS_DIR}/enemy.png"
-    COMMENT "Converting enemy.png to enemy.tim"
-)
-
-# Command konversi player.png -> player.tim
-add_custom_command(
-    OUTPUT "${GEN_ASSETS_DIR}/player.tim"
-    COMMAND ${IMG2TIM} -o "${GEN_ASSETS_DIR}/player.tim" -bpp 8 -bkg 000000 "${ASSETS_DIR}/player.png"
-    DEPENDS "${ASSETS_DIR}/player.png"
-    COMMENT "Converting player.png to player.tim"
-)
-
-# Command konversi potion.png -> potion.tim
-add_custom_command(
-    OUTPUT "${GEN_ASSETS_DIR}/potion.tim"
-    COMMAND ${IMG2TIM} -o "${GEN_ASSETS_DIR}/potion.tim" -bpp 8 -bkg 000000 "${ASSETS_DIR}/potion.png"
-    DEPENDS "${ASSETS_DIR}/potion.png"
-    COMMENT "Converting potion.png to potion.tim"
-)
-
-# Target khusus untuk trigger konversi asset
-add_custom_target(convert_assets DEPENDS
-    "${GEN_ASSETS_DIR}/enemy.tim"
-    "${GEN_ASSETS_DIR}/player.tim"
-    "${GEN_ASSETS_DIR}/potion.tim"
-)
-
+# Target Executable PS1
 psn00bsdk_add_executable(neon_runner GPREL
     src/main.c
 )
-add_dependencies(neon_runner convert_assets)
 
 # --- MEMBUAT SYSTEM.CNF & ISO.XML ---
 set(ISO_DIR "${CMAKE_CURRENT_BINARY_DIR}/iso")
+set(ASSETS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets")
 file(MAKE_DIRECTORY "${ISO_DIR}")
 
 file(WRITE "${ISO_DIR}/system.cnf"
 "BOOT=cdrom:\\NEONRUN.EXE;1\nTCB=4\nEVENT=10\nSTACK=801FFFF0\n")
 
-# Masukkan seluruh file TIM ke dalam ISO Tree
+# Masukkan seluruh file TIM (dari folder assets) ke dalam ISO Tree
 file(WRITE "${ISO_DIR}/iso.xml"
 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <iso_project image_name=\"neon_runner.bin\" cue_sheet=\"neon_runner.cue\">
@@ -75,9 +37,9 @@ file(WRITE "${ISO_DIR}/iso.xml"
         <directory_tree>
             <file name=\"system.cnf\" type=\"data\" source=\"${ISO_DIR}/system.cnf\"/>
             <file name=\"NEONRUN.EXE\" type=\"data\" source=\"${CMAKE_CURRENT_BINARY_DIR}/neon_runner.exe\"/>
-            <file name=\"ENEMY.TIM\" type=\"data\" source=\"${GEN_ASSETS_DIR}/enemy.tim\"/>
-            <file name=\"PLAYER.TIM\" type=\"data\" source=\"${GEN_ASSETS_DIR}/player.tim\"/>
-            <file name=\"POTION.TIM\" type=\"data\" source=\"${GEN_ASSETS_DIR}/potion.tim\"/>
+            <file name=\"ENEMY.TIM\" type=\"data\" source=\"${ASSETS_DIR}/enemy.tim\"/>
+            <file name=\"PLAYER.TIM\" type=\"data\" source=\"${ASSETS_DIR}/player.tim\"/>
+            <file name=\"POTION.TIM\" type=\"data\" source=\"${ASSETS_DIR}/potion.tim\"/>
             <dummy sectors=\"256\"/>
         </directory_tree>
     </track>
