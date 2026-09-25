@@ -9,12 +9,10 @@ include("${PSN00BSDK_LIBS}/cmake/sdk.cmake")
 
 include_directories("${CMAKE_SOURCE_DIR}/src")
 
-# Target Executable PS1
 psn00bsdk_add_executable(neon_runner GPREL
     src/main.c
 )
 
-# --- MEMBUAT SYSTEM.CNF & ISO.XML ---
 set(ISO_DIR "${CMAKE_CURRENT_BINARY_DIR}/iso")
 set(ASSETS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets")
 file(MAKE_DIRECTORY "${ISO_DIR}")
@@ -22,7 +20,6 @@ file(MAKE_DIRECTORY "${ISO_DIR}")
 file(WRITE "${ISO_DIR}/system.cnf"
 "BOOT=cdrom:\\NEONRUN.EXE;1\nTCB=4\nEVENT=10\nSTACK=801FFFF0\n")
 
-# Masukkan seluruh file TIM (dari folder assets) ke dalam ISO Tree
 file(WRITE "${ISO_DIR}/iso.xml"
 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <iso_project image_name=\"neon_runner.bin\" cue_sheet=\"neon_runner.cue\">
