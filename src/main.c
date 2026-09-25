@@ -6,6 +6,7 @@
 #include <psxpad.h>
 #include <psxcd.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #define SCREEN_X 320
 #define SCREEN_Y 240
@@ -80,22 +81,38 @@ static int god_mode = 0;
 static int prev_pad_btn = 0xFFFF;
 static int cheat_step = 0;
 
-/* Helper Load TIM File dari CD-ROM ke VRAM */
+/* Helper Load TIM File dari CD-ROM ke VRAM menggunakan Standard C I/O PSn00bSDK */
 static int load_tim_from_cd(const char *filename, TextureAsset *tex)
 {
+    FILE *fp;
     u_long *file_buf;
+    long file_size;
     TIM_IMAGE tim;
-    int bytes_read;
 
-    /* Alokasi memori sementara untuk file TIM */
-    file_buf = (u_long *)malloc(64 * 1024);
-    if (!file_buf) return 0;
-
-    bytes_read = CdReadFile((char *)filename, file_buf, 64 * 1024);
-    if (bytes_read <= 0) {
-        free(file_buf);
+    fp = fopen(filename, "rb");
+    if (!fp) {
         return 0;
     }
+
+    /* Hitung ukuran file TIM */
+    fseek(fp, 0, SEEK_END);
+    file_size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    if (file_size <= 0) {
+        fclose(fp);
+        return 0;
+    }
+
+    /* Alokasi memori dinamis sesuai ukuran file */
+    file_buf = (u_long *)malloc(file_size);
+    if (!file_buf) {
+        fclose(fp);
+        return 0;
+    }
+
+    fread(file_buf, 1, file_size, fp);
+    fclose(fp);
 
     GetTimInfo(file_buf, &tim);
 
@@ -542,10 +559,10 @@ int main(void)
     init_video();
     init_pad();
 
-    /* Load TIM Textures dari CD-ROM */
-    load_tim_from_cd("\\PLAYER.TIM;1", &tex_player);
-    load_tim_from_cd("\\ENEMY.TIM;1", &tex_enemy);
-    load_tim_from_cd("\\POTION.TIM;1", &tex_potion);
+    /* Load TIM Textures dari CD-ROM menggunakan path ISO standard */
+    load_tim_from_cd("cdrom:\\PLAYER.TIM;1", &tex_player);
+    load_tim_from_cd("cdrom:\\ENEMY.TIM;1", &tex_enemy);
+    load_tim_from_cd("cdrom:\\POTION.TIM;1", &tex_potion);
 
     while (1) {
         update_game();
