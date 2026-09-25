@@ -98,39 +98,66 @@ static int load_tim_from_cd(const char *filename, TextureAsset *tex)
 
     memset(tex, 0, sizeof(*tex));
 
-    if (!CdSearchFile(&file, filename))
+    if (CdSearchFile(&file, filename) == NULL) {
         return 0;
+    }
 
     sectors = (file.size + 2047) / 2048;
 
-    if (sectors <= 0)
+    if (sectors <= 0) {
         return 0;
+    }
 
     file_buf = (u_long *)malloc((size_t)sectors * 2048);
 
-    if (!file_buf)
+    if (file_buf == NULL) {
         return 0;
+    }
 
-    CdControl(CdlSetloc, (u_char *)&file.pos, 0);
-    CdRead(sectors, file_buf, CdlModeSpeed);
+    /*
+     * PSn00bSDK v0.24:
+     * CdlFILE uses .pos, not .loc.
+     */
+    CdControl(
+        CdlSetloc,
+        (u_char *)&file.pos,
+        0
+    );
+
+    CdRead(
+        sectors,
+        file_buf,
+        CdlModeSpeed
+    );
 
     if (CdReadSync(0, 0) < 0) {
         free(file_buf);
         return 0;
     }
 
-    GetTimInfo(file_buf, &tim);
+    GetTimInfo(
+        file_buf,
+        &tim
+    );
 
-    if (!tim.prect) {
+    if (tim.prect == NULL) {
         free(file_buf);
         return 0;
     }
 
-    LoadImage(tim.prect, tim.paddr);
+    LoadImage(
+        tim.prect,
+        tim.paddr
+    );
+
     DrawSync(0);
 
-    if ((tim.mode & 0x8) && tim.crect) {
-        LoadImage(tim.crect, tim.caddr);
+    if ((tim.mode & 0x8) && tim.crect != NULL) {
+        LoadImage(
+            tim.crect,
+            tim.caddr
+        );
+
         DrawSync(0);
     }
 
@@ -141,22 +168,31 @@ static int load_tim_from_cd(const char *filename, TextureAsset *tex)
         tim.prect->y
     );
 
-    tex->clut =
-        ((tim.mode & 0x8) && tim.crect)
-            ? getClut(tim.crect->x, tim.crect->y)
-            : 0;
-
-    if ((tim.mode & 0x3) == 0) {
-        tex->u = (tim.prect->x & 0x3f) * 4;
-        tex->w = tim.prect->w * 4;
-    }
-    else if ((tim.mode & 0x3) == 1) {
-        tex->u = (tim.prect->x & 0x3f) * 2;
-        tex->w = tim.prect->w * 2;
+    if ((tim.mode & 0x8) && tim.crect != NULL) {
+        tex->clut = getClut(
+            tim.crect->x,
+            tim.crect->y
+        );
     }
     else {
-        tex->u = tim.prect->x & 0x3f;
-        tex->w = tim.prect->w;
+        tex->clut = 0;
+    }
+
+    switch (tim.mode & 0x3) {
+        case 0:
+            tex->u = (tim.prect->x & 0x3f) * 4;
+            tex->w = tim.prect->w * 4;
+            break;
+
+        case 1:
+            tex->u = (tim.prect->x & 0x3f) * 2;
+            tex->w = tim.prect->w * 2;
+            break;
+
+        default:
+            tex->u = tim.prect->x & 0x3f;
+            tex->w = tim.prect->w;
+            break;
     }
 
     tex->v = tim.prect->y & 0xff;
@@ -164,6 +200,7 @@ static int load_tim_from_cd(const char *filename, TextureAsset *tex)
     tex->loaded = 1;
 
     free(file_buf);
+
     return 1;
 }
 
@@ -868,20 +905,14 @@ int main(void)
     init_video();
     init_pad();
 
-    load_tim_from_cd(
-        "\\PLAYER.TIM;1",
-        &tex_player
-    );
-
-    load_tim_from_cd(
-        "\\ENEMY.TIM;1",
-        &tex_enemy
-    );
-
-    load_tim_from_cd(
-        "\\POTION.TIM;1",
-        &tex_potion
-    );
+    /*
+     * Temporarily disable CD asset loading.
+     */
+    /*
+    load_tim_from_cd("\\PLAYER.TIM;1", &tex_player);
+    load_tim_from_cd("\\ENEMY.TIM;1", &tex_enemy);
+    load_tim_from_cd("\\POTION.TIM;1", &tex_potion);
+    */
 
     while (1) {
         update_game();
