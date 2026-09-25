@@ -4,12 +4,13 @@
 #include <psxapi.h>
 #include <psxsio.h>
 #include <psxpad.h>
+#include <psxcd.h>
 #include <stdio.h>
 
 #define SCREEN_X 320
 #define SCREEN_Y 240
 #define OT_LEN 8
-#define PRIM_SIZE 64
+#define PRIM_SIZE 128
 #define MAX_ENEMIES 5
 #define MAX_BULLETS 8
 
@@ -22,6 +23,15 @@ typedef enum {
     STATE_GAMEOVER
 } GameState;
 
+/* Asset TIM Info Struct */
+typedef struct {
+    u_short tpage;
+    u_short clut;
+    u_char u, v;
+    u_short w, h;
+    int loaded;
+} TextureAsset;
+
 static DISPENV disp[2];
 static DRAWENV draw[2];
 
@@ -32,6 +42,11 @@ static unsigned char padbuff[2][34];
 static int db = 0;
 static int font_id;
 static GameState game_state = STATE_INTRO;
+
+/* Assets */
+static TextureAsset tex_player;
+static TextureAsset tex_enemy;
+static TextureAsset tex_potion;
 
 /* Entity Structs */
 typedef struct {
@@ -45,8 +60,14 @@ typedef struct {
     int active;
 } Bullet;
 
+typedef struct {
+    int x, y;
+    int active;
+} PotionItem;
+
 static Enemy enemies[MAX_ENEMIES];
 static Bullet bullets[MAX_BULLETS];
+static PotionItem potion;
 
 static int player_x, player_y;
 static int score;
@@ -57,9 +78,52 @@ static int menu_selection = 0; /* 0: Start, 1: Exit */
 static int boost_timer = 0;
 static int god_mode = 0;
 static int prev_pad_btn = 0xFFFF;
-
-/* Cheat Sequence State: ATAS + (O, X, TRIANGLE, O) */
 static int cheat_step = 0;
+
+/* Helper Load TIM File dari CD-ROM ke VRAM */
+static int load_tim_from_cd(const char *filename, TextureAsset *tex)
+{
+    u_long *file_buf;
+    TIM_IMAGE tim;
+    int bytes_read;
+
+    /* Alokasi memori sementara untuk file TIM */
+    file_buf = (u_long *)malloc(64 * 1024);
+    if (!file_buf) return 0;
+
+    bytes_read = CdReadFile((char *)filename, file_buf, 64 * 1024);
+    if (bytes_read <= 0) {
+        free(file_buf);
+        return 0;
+    }
+
+    GetTimInfo(file_buf, &tim);
+
+    /* Transfer Pixel Data ke VRAM */
+    if (tim.prect) {
+        LoadImage(tim.prect, tim.paddr);
+        DrawSync(0);
+    }
+
+    /* Transfer CLUT (Palette) jika ada */
+    if (tim.mode & 0x8) {
+        if (tim.crect) {
+            LoadImage(tim.crect, tim.caddr);
+            DrawSync(0);
+        }
+    }
+
+    tex->tpage = getTPage(tim.mode & 0x3, 0, tim.prect->x, tim.prect->y);
+    tex->clut = (tim.mode & 0x8) ? getClut(tim.crect->x, tim.crect->y) : 0;
+    tex->u = (tim.prect->x & 0x3f) * ((tim.mode & 0x3) == 0 ? 4 : (tim.mode & 0x3) == 1 ? 2 : 1);
+    tex->v = tim.prect->y & 0xff;
+    tex->w = tim.prect->w * ((tim.mode & 0x3) == 0 ? 4 : (tim.mode & 0x3) == 1 ? 2 : 1);
+    tex->h = tim.prect->h;
+    tex->loaded = 1;
+
+    free(file_buf);
+    return 1;
+}
 
 static void init_video(void)
 {
@@ -105,6 +169,10 @@ static void reset_game(void)
     frame_counter = 0;
     boost_timer = 0;
 
+    potion.active = 0;
+    potion.x = 0;
+    potion.y = -20;
+
     for (i = 0; i < MAX_ENEMIES; ++i) {
         enemies[i].active = 0;
         enemies[i].x = 0;
@@ -131,13 +199,22 @@ static void spawn_enemy(void)
     }
 }
 
+static void spawn_potion(void)
+{
+    if (!potion.active) {
+        potion.active = 1;
+        potion.x = 30 + (frame_counter * 17) % 260;
+        potion.y = -16;
+    }
+}
+
 static void shoot_bullet(void)
 {
     int i;
     for (i = 0; i < MAX_BULLETS; ++i) {
         if (!bullets[i].active) {
             bullets[i].active = 1;
-            bullets[i].x = player_x + 10; /* Pas di tengah meriam */
+            bullets[i].x = player_x + 10;
             bullets[i].y = player_y - 6;
             return;
         }
@@ -151,21 +228,51 @@ static int overlap(int ax, int ay, int aw, int ah,
            ay < by + bh && ay + ah > by;
 }
 
-static void draw_tile(char **nextpri, int x, int y, int w, int h,
-                      int r, int g, int b)
+/* Helper Menggambar Sprite Bermotif Tekstur (TIM) */
+static void draw_sprite(char **nextpri, TextureAsset *tex, int x, int y, int w, int h, int r, int g, int b)
+{
+    if (!tex->loaded) {
+        /* Fallback jika TIM gagal muat */
+        TILE *tile = (TILE *)*nextpri;
+        setTile(tile);
+        setXY0(tile, x, y);
+        setWH(tile, w, h);
+        setRGB0(tile, r, g, b);
+        addPrim(ot[db] + (OT_LEN - 1), tile);
+        *nextpri += sizeof(TILE);
+        return;
+    }
+
+    SPRT *sprt = (SPRT *)*nextpri;
+    setSprt(sprt);
+    setXY0(sprt, x, y);
+    setWH(sprt, w, h);
+    setUV0(sprt, tex->u, tex->v);
+    setRGB0(sprt, r, g, b);
+
+    /* Setup TPage & CLUT Primitive */
+    DR_TPAGE *tpage = (DR_TPAGE *)(*nextpri + sizeof(SPRT));
+    setDrawTPage(tpage, 0, 1, tex->tpage);
+
+    sprt->clut = tex->clut;
+
+    addPrim(ot[db] + (OT_LEN - 1), sprt);
+    addPrim(ot[db] + (OT_LEN - 1), tpage);
+
+    *nextpri += sizeof(SPRT) + sizeof(DR_TPAGE);
+}
+
+static void draw_tile(char **nextpri, int x, int y, int w, int h, int r, int g, int b)
 {
     TILE *tile = (TILE *)*nextpri;
-
     setTile(tile);
     setXY0(tile, x, y);
     setWH(tile, w, h);
     setRGB0(tile, r, g, b);
-
     addPrim(ot[db] + (OT_LEN - 1), tile);
     *nextpri += sizeof(TILE);
 }
 
-/* Deteksi tombol baru ditekan (Press Edge) */
 static int is_btn_pressed(u_short btn_mask, u_short curr_btn)
 {
     return (!(curr_btn & btn_mask)) && (prev_pad_btn & btn_mask);
@@ -173,17 +280,15 @@ static int is_btn_pressed(u_short btn_mask, u_short curr_btn)
 
 static void check_cheat_code(u_short curr_btn)
 {
-    /* Syarat Wajib: Tombol ATAS harus ditahan (active low) */
     if (curr_btn & PAD_UP) {
         cheat_step = 0;
         return;
     }
 
-    /* Urutan: O -> X -> TRIANGLE -> O */
     if (is_btn_pressed(PAD_CIRCLE, curr_btn)) {
         if (cheat_step == 0) cheat_step = 1;
         else if (cheat_step == 3) {
-            god_mode = !god_mode; /* Toggle Immortal */
+            god_mode = !god_mode;
             cheat_step = 0;
         } else cheat_step = 0;
     } 
@@ -203,18 +308,19 @@ static void update_game(void)
     u_short btn;
     int i, j;
 
-    if (pad->stat != 0)
-        return;
+    if (pad->stat != 0) return;
 
     btn = pad->btn;
     ++frame_counter;
 
-    /* 1. STATE INTRO */
+    /* 1. STATE INTRO (ODEN STUDIO, Unskippable & Fade-In/Out) */
     if (game_state == STATE_INTRO) {
-        if (frame_counter > 150 || is_btn_pressed(PAD_START, btn) || is_btn_pressed(PAD_CROSS, btn)) {
+        /* Total durasi 240 frame (~4 detik di 60FPS) */
+        if (frame_counter >= 240) {
             game_state = STATE_START_SCREEN;
             frame_counter = 0;
         }
+        /* Tombol diabaikan agar unskippable */
     }
     /* 2. STATE START SCREEN */
     else if (game_state == STATE_START_SCREEN) {
@@ -235,7 +341,6 @@ static void update_game(void)
                 reset_game();
                 game_state = STATE_GAMEPLAY;
             } else {
-                /* Exit: kembali ke Start Screen */
                 game_state = STATE_START_SCREEN;
             }
         }
@@ -247,7 +352,7 @@ static void update_game(void)
         if (boost_timer > 0)
             --boost_timer;
 
-        /* Gerakan Player */
+        /* Movement */
         if (!(btn & PAD_LEFT))  player_x -= move_speed;
         if (!(btn & PAD_RIGHT)) player_x += move_speed;
         if (!(btn & PAD_UP))    player_y -= move_speed;
@@ -258,17 +363,12 @@ static void update_game(void)
         if (player_y < 40) player_y = 40;
         if (player_y > 216) player_y = 216;
 
-        /* Tembak Peluru (O / CIRCLE) */
+        /* Shoot Bullet */
         if (is_btn_pressed(PAD_CIRCLE, btn)) {
             shoot_bullet();
         }
 
-        /* Aktifkan Boost Potion (R1) */
-        if (is_btn_pressed(PAD_R1, btn)) {
-            boost_timer = 120; /* 2 detik boost */
-        }
-
-        /* Update Peluru */
+        /* Update Bullets */
         for (i = 0; i < MAX_BULLETS; ++i) {
             if (!bullets[i].active) continue;
 
@@ -278,17 +378,34 @@ static void update_game(void)
             }
         }
 
-        /* Spawn Musuh */
+        /* Spawn Potion (Drop Random setiap ~300 frame / 5 detik) */
+        if ((frame_counter % 300) == 0) {
+            spawn_potion();
+        }
+
+        /* Update Potion Drop & Collision */
+        if (potion.active) {
+            potion.y += 2;
+            if (overlap(player_x, player_y, 24, 18, potion.x, potion.y, 16, 16)) {
+                potion.active = 0;
+                boost_timer = 180; /* Boost 3 detik */
+            }
+            if (potion.y > SCREEN_Y) {
+                potion.active = 0;
+            }
+        }
+
+        /* Spawn Enemies */
         if ((frame_counter % 40) == 0)
             spawn_enemy();
 
-        /* Update Musuh & Tabrakan */
+        /* Update Enemies */
         for (i = 0; i < MAX_ENEMIES; ++i) {
             if (!enemies[i].active) continue;
 
             enemies[i].y += enemies[i].speed;
 
-            /* Cek Kena Peluru */
+            /* Check Bullet Collision */
             for (j = 0; j < MAX_BULLETS; ++j) {
                 if (bullets[j].active && overlap(bullets[j].x, bullets[j].y, 4, 8,
                                                 enemies[i].x, enemies[i].y, 18, 18)) {
@@ -298,7 +415,7 @@ static void update_game(void)
                 }
             }
 
-            /* Cek Tabrakan dengan Player */
+            /* Check Player Collision */
             if (enemies[i].active && overlap(player_x, player_y, 24, 18,
                                             enemies[i].x, enemies[i].y, 18, 18)) {
                 if (!god_mode) {
@@ -330,26 +447,51 @@ static void draw_game(void)
     ClearOTagR(ot[db], OT_LEN);
 
     if (game_state == STATE_INTRO) {
-        FntPrint(font_id, "\n\n\n\n\n\n       POWERED BY RYCL\n");
+        /* Hitung Alpha Intensity untuk Efek Fade-In & Fade-Out */
+        int brightness = 0;
+        if (frame_counter < 60) {
+            brightness = (frame_counter * 255) / 60; /* Fade In (1 detik) */
+        } else if (frame_counter < 180) {
+            brightness = 255; /* Tahan selama 2 detik */
+        } else {
+            brightness = ((240 - frame_counter) * 255) / 60; /* Fade Out (1 detik) */
+        }
+
+        if (brightness < 0) brightness = 0;
+        if (brightness > 255) brightness = 255;
+
+        /* Warna Latar & Teks ODEN STUDIO */
+        setRGB0(&draw[db], 0, 0, 0);
+        FntPrint(font_id, "\n\n\n\n\n\n\n\n          ODEN STUDIO");
     }
     else if (game_state == STATE_START_SCREEN) {
-        FntPrint(font_id, "\n\n\n    NEON RUNNER PSX\n\n\n"
-                          "   PRESS START BUTTON\n");
+        setRGB0(&draw[db], 5, 8, 24);
+        FntPrint(font_id, "\n\n\n\n        NEON RUNNER PSX\n\n\n\n\n\n\n\n"
+                          "      - PRESS START BUTTON -");
         if (god_mode) {
-            FntPrint(font_id, "\n\n  [ CHEAT: GODMODE ON ]");
+            FntPrint(font_id, "\n\n     [ CHEAT: GODMODE ON ]");
         }
     }
     else if (game_state == STATE_MAIN_MENU) {
-        FntPrint(font_id, "\n\n\n     MAIN MENU\n\n"
-                          "  %c START GAME\n"
-                          "  %c EXIT\n",
+        setRGB0(&draw[db], 5, 8, 24);
+        FntPrint(font_id, "\n\n\n\n        NEON RUNNER PSX\n\n\n\n\n\n"
+                          "           MAIN MENU\n\n"
+                          "        %c START GAME\n"
+                          "        %c EXIT GAME",
                           (menu_selection == 0) ? '>' : ' ',
                           (menu_selection == 1) ? '>' : ' ');
     }
     else if (game_state == STATE_GAMEPLAY || game_state == STATE_GAMEOVER) {
-        /* Render Player (Meriam) */
-        draw_tile(&nextpri, player_x, player_y, 24, 18, 
-                  (boost_timer > 0) ? 255 : 40, 210, 255);
+        setRGB0(&draw[db], 5, 8, 24);
+
+        /* Render Player (TIM Sprite) */
+        draw_sprite(&nextpri, &tex_player, player_x, player_y, 24, 18, 
+                    (boost_timer > 0) ? 255 : 200, 255, 255);
+
+        /* Render Potion Drop (TIM Sprite) */
+        if (potion.active) {
+            draw_sprite(&nextpri, &tex_potion, potion.x, potion.y, 16, 16, 255, 255, 255);
+        }
 
         /* Render Peluru */
         for (i = 0; i < MAX_BULLETS; ++i) {
@@ -357,10 +499,10 @@ static void draw_game(void)
                 draw_tile(&nextpri, bullets[i].x, bullets[i].y, 4, 8, 255, 255, 0);
         }
 
-        /* Render Musuh */
+        /* Render Musuh (TIM Sprite) */
         for (i = 0; i < MAX_ENEMIES; ++i) {
             if (enemies[i].active)
-                draw_tile(&nextpri, enemies[i].x, enemies[i].y, 18, 18, 255, 60, 80);
+                draw_sprite(&nextpri, &tex_enemy, enemies[i].x, enemies[i].y, 18, 18, 255, 255, 255);
         }
 
         /* Separator Line HUD */
@@ -368,7 +510,7 @@ static void draw_game(void)
         draw_tile(&nextpri, 0, 232, 320, 2, 80, 90, 150);
 
         if (game_state == STATE_GAMEOVER) {
-            FntPrint(font_id, "\n GAME OVER!\n SCORE: %d\n\n PRESS START", score);
+            FntPrint(font_id, "\n\n\n\n         GAME OVER!\n\n        FINAL SCORE: %d\n\n\n      PRESS START TO MENU", score);
         } else {
             FntPrint(font_id, "\n NEON RUNNER   SCORE %d   %s %s", 
                      score, 
@@ -396,8 +538,14 @@ static void display(void)
 
 int main(void)
 {
+    CdInit();
     init_video();
     init_pad();
+
+    /* Load TIM Textures dari CD-ROM */
+    load_tim_from_cd("\\PLAYER.TIM;1", &tex_player);
+    load_tim_from_cd("\\ENEMY.TIM;1", &tex_enemy);
+    load_tim_from_cd("\\POTION.TIM;1", &tex_potion);
 
     while (1) {
         update_game();
